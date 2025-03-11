@@ -18,25 +18,54 @@ import triton
 import triton.language as tl
 from .base import MultiStageDotProductionAttention
 
-_BLOCK_N=64
-_BLOCK_M=64
+_BLOCK_N = 64
+_BLOCK_M = 64
+
 
 @triton.jit
-def _attn_fwd_inner(acc, l_i, m_i, q, 
-                    K_block_ptr, V_block_ptr,
-                    start_m, qk_scale, N_CTX,
-                    sliding_window_offset, sliding_window_size,
-                    BLOCK_M: tl.constexpr, BLOCK_DMODEL: tl.constexpr, BLOCK_N: tl.constexpr, SLIDING_WINDOW: tl.constexpr,
-                    IS_EVEN_M: tl.constexpr, IS_EVEN_N: tl.constexpr, COMPLEMENT_SLIDING_WINDOW: tl.constexpr
-                ):
+def _attn_fwd_inner(
+    acc,
+    l_i,
+    m_i,
+    q,
+    K_block_ptr,
+    V_block_ptr,
+    start_m,
+    qk_scale,
+    N_CTX,
+    sliding_window_offset,
+    sliding_window_size,
+    BLOCK_M: tl.constexpr,
+    BLOCK_DMODEL: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    SLIDING_WINDOW: tl.constexpr,
+    IS_EVEN_M: tl.constexpr,
+    IS_EVEN_N: tl.constexpr,
+    COMPLEMENT_SLIDING_WINDOW: tl.constexpr,
+):
     # range of values handled by this stage
     if SLIDING_WINDOW and not COMPLEMENT_SLIDING_WINDOW:
         if COMPLEMENT_SLIDING_WINDOW:
             lo = 0
-            hi = (((start_m + 1) * BLOCK_M + sliding_window_offset - sliding_window_size + BLOCK_N - 1) // BLOCK_N) * BLOCK_N
+            hi = (
+                (
+                    (start_m + 1) * BLOCK_M
+                    + sliding_window_offset
+                    - sliding_window_size
+                    + BLOCK_N
+                    - 1
+                )
+                // BLOCK_N
+            ) * BLOCK_N
         else:
-            lo = ((start_m * BLOCK_M + sliding_window_offset - sliding_window_size + 1) // BLOCK_N) * BLOCK_N
-            hi = ((((start_m + 1) * BLOCK_M - 1) + sliding_window_offset + BLOCK_N) // BLOCK_N) * BLOCK_N
+            lo = (
+                (start_m * BLOCK_M + sliding_window_offset - sliding_window_size + 1)
+                // BLOCK_N
+            ) * BLOCK_N
+            hi = (
+                (((start_m + 1) * BLOCK_M - 1) + sliding_window_offset + BLOCK_N)
+                // BLOCK_N
+            ) * BLOCK_N
             if lo < 0:
                 lo = 0
             if hi > N_CTX:
@@ -60,23 +89,30 @@ def _attn_fwd_inner(acc, l_i, m_i, q,
             k = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero")
 
         qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-        qk += tl.dot(q, k) 
+        qk += tl.dot(q, k)
         qk = qk * qk_scale
 
         if SLIDING_WINDOW:
-            dist = tl.arange(0, BLOCK_M)[:, None] - tl.arange(0, BLOCK_N)[None, :] \
-                   + start_m * BLOCK_M - start_n + sliding_window_offset
+            dist = (
+                tl.arange(0, BLOCK_M)[:, None]
+                - tl.arange(0, BLOCK_N)[None, :]
+                + start_m * BLOCK_M
+                - start_n
+                + sliding_window_offset
+            )
 
             if COMPLEMENT_SLIDING_WINDOW:
-                mask = (dist >= sliding_window_size)
+                mask = dist >= sliding_window_size
             else:
                 mask = (dist >= 0) & (dist < sliding_window_size)
 
             qk = tl.where(mask, qk, float("-inf"))
 
         if not IS_EVEN_N:
-            qk = tl.where(((tl.arange(0, BLOCK_N) + start_n) < N_CTX)[None, :], qk, float("-inf"))
-   
+            qk = tl.where(
+                ((tl.arange(0, BLOCK_N) + start_n) < N_CTX)[None, :], qk, float("-inf")
+            )
+
         m_ij = tl.maximum(m_i, tl.max(qk, 1))
         qk = qk - m_ij[:, None]
         p = tl.math.exp2(qk)
@@ -90,9 +126,9 @@ def _attn_fwd_inner(acc, l_i, m_i, q,
         l_ij = tl.sum(p, 1)
         # -- update m_i and l_i
         tmp = m_i - m_ij
-        alpha_mask = (tmp != tmp) # check nan
+        alpha_mask = tmp != tmp  # check nan
         alpha = tl.math.exp2(tmp)
-        alpha = tl.where(alpha_mask, 1., alpha)
+        alpha = tl.where(alpha_mask, 1.0, alpha)
         l_i = l_i * alpha + l_ij
         # -- update output accumulator --
         acc = acc * alpha[:, None]
@@ -118,33 +154,54 @@ def _attn_fwd_inner(acc, l_i, m_i, q,
     }
 )
 @triton.jit
-def _attn_fwd(Q, K, V, sm_scale, M, Out, L,#
-              stride_qz, stride_qh, stride_qm, stride_qk,  #
-              stride_kz, stride_kh, stride_kn, stride_kk,  #
-              stride_vz, stride_vh, stride_vk, stride_vn,  #
-              stride_oz, stride_oh, stride_om, stride_on,  #
-              Z, H, H_KV, #
-              N_CTX,  #
-              ROUND_CTX,
-              NKV_CTX,
-              sliding_window_offset,
-              sliding_window_size,
-              IS_EVEN_M: tl.constexpr,
-              IS_EVEN_N: tl.constexpr,
-              BLOCK_M: tl.constexpr,  #
-              BLOCK_DMODEL: tl.constexpr,  #
-              BLOCK_N: tl.constexpr,  #
-              END: tl.constexpr,
-              INIT: tl.constexpr,
-              SLIDING_WINDOW: tl.constexpr,
-              COMPLEMENT_SLIDING_WINDOW: tl.constexpr
-            ):
+def _attn_fwd(
+    Q,
+    K,
+    V,
+    sm_scale,
+    M,
+    Out,
+    L,  #
+    stride_qz,
+    stride_qh,
+    stride_qm,
+    stride_qk,  #
+    stride_kz,
+    stride_kh,
+    stride_kn,
+    stride_kk,  #
+    stride_vz,
+    stride_vh,
+    stride_vk,
+    stride_vn,  #
+    stride_oz,
+    stride_oh,
+    stride_om,
+    stride_on,  #
+    Z,
+    H,
+    H_KV,  #
+    N_CTX,  #
+    ROUND_CTX,
+    NKV_CTX,
+    sliding_window_offset,
+    sliding_window_size,
+    IS_EVEN_M: tl.constexpr,
+    IS_EVEN_N: tl.constexpr,
+    BLOCK_M: tl.constexpr,  #
+    BLOCK_DMODEL: tl.constexpr,  #
+    BLOCK_N: tl.constexpr,  #
+    END: tl.constexpr,
+    INIT: tl.constexpr,
+    SLIDING_WINDOW: tl.constexpr,
+    COMPLEMENT_SLIDING_WINDOW: tl.constexpr,
+):
 
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
     off_z = off_hz // H
     off_h = off_hz % H
-    off_hkv = off_h // (H//H_KV)
+    off_hkv = off_h // (H // H_KV)
     q_offset = off_z.to(tl.int64) * stride_qz + off_h.to(tl.int64) * stride_qh
     k_offset = off_z.to(tl.int64) * stride_kz + off_hkv.to(tl.int64) * stride_kh
     v_offset = off_z.to(tl.int64) * stride_vz + off_hkv.to(tl.int64) * stride_vh
@@ -193,26 +250,41 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out, L,#
         l_i = tl.zeros([BLOCK_M], dtype=tl.float32) + 1.0
         acc = tl.zeros([BLOCK_M, BLOCK_DMODEL], dtype=tl.float32)
     else:
-        # don't have to check boundary for q len 
+        # don't have to check boundary for q len
         m_i = tl.load(m_ptrs).to(tl.float32)
         l_i = tl.load(l_ptrs).to(tl.float32)
         acc = tl.load(O_block_ptr).to(tl.float32)
 
     qk_scale = sm_scale
-    qk_scale *= 1.4426950408889634   # 1/log(2)
+    qk_scale *= 1.4426950408889634  # 1/log(2)
     # load q: it will stay in SRAM throughout
     if IS_EVEN_M:
         q = tl.load(Q_block_ptr)
     else:
         q = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero")
 
-    acc, l_i, m_i = _attn_fwd_inner(acc, l_i, m_i, q, K_block_ptr, V_block_ptr, #
-                                    start_m, qk_scale, NKV_CTX, #
-                                    sliding_window_offset, sliding_window_size,
-                                    BLOCK_M, BLOCK_DMODEL, BLOCK_N, SLIDING_WINDOW, IS_EVEN_M, IS_EVEN_N,
-                                    COMPLEMENT_SLIDING_WINDOW) 
+    acc, l_i, m_i = _attn_fwd_inner(
+        acc,
+        l_i,
+        m_i,
+        q,
+        K_block_ptr,
+        V_block_ptr,  #
+        start_m,
+        qk_scale,
+        NKV_CTX,  #
+        sliding_window_offset,
+        sliding_window_size,
+        BLOCK_M,
+        BLOCK_DMODEL,
+        BLOCK_N,
+        SLIDING_WINDOW,
+        IS_EVEN_M,
+        IS_EVEN_N,
+        COMPLEMENT_SLIDING_WINDOW,
+    )
     # epilogue
-    if (END):
+    if END:
         m_i += tl.math.log2(l_i)
         acc = acc / l_i[:, None]
     else:
@@ -230,11 +302,25 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out, L,#
 )
 @triton.jit
 def _score_kernel(
-    Q, K, M, sm_scale, Out,
-    stride_qz, stride_qh, stride_qm, stride_qk,  #
-    stride_kz, stride_kh, stride_kn, stride_kk,  #
-    stride_oz, stride_oh, stride_on,
-    Z, H, H_KV, #
+    Q,
+    K,
+    M,
+    sm_scale,
+    Out,
+    stride_qz,
+    stride_qh,
+    stride_qm,
+    stride_qk,  #
+    stride_kz,
+    stride_kh,
+    stride_kn,
+    stride_kk,  #
+    stride_oz,
+    stride_oh,
+    stride_on,
+    Z,
+    H,
+    H_KV,  #
     N_CTX,  #
     ROUND_CTX,
     NKV_CTX,
@@ -252,7 +338,7 @@ def _score_kernel(
     off_hz = tl.program_id(1)
     off_z = off_hz // H
     off_h = off_hz % H
-    off_hkv = off_h // (H//H_KV)
+    off_hkv = off_h // (H // H_KV)
     q_offset = off_z.to(tl.int64) * stride_qz + off_h.to(tl.int64) * stride_qh
     k_offset = off_z.to(tl.int64) * stride_kz + off_hkv.to(tl.int64) * stride_kh
     m_ptrs = M + off_hz * ROUND_CTX + tl.arange(0, BLOCK_M)
@@ -279,60 +365,61 @@ def _score_kernel(
         k = tl.load(K_block_ptr)
     else:
         k = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero")
-        
 
     lo = 0
     hi = ROUND_CTX
     qk_scale = sm_scale
-    qk_scale *= 1.4426950408889634   # 1/log(2)
+    qk_scale *= 1.4426950408889634  # 1/log(2)
 
     for start_m in range(lo, hi, BLOCK_M):
         start_m = tl.multiple_of(start_m, BLOCK_M)
         if IS_EVEN_M:
             q = tl.load(Q_block_ptr)
         else:
-            q = tl.load(Q_block_ptr, boundary_check=(0,1), padding_option="zero")
+            q = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero")
 
         m = tl.load(m_ptrs)
 
-        # calc qk 
+        # calc qk
         qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-        qk += tl.dot(q, k) 
+        qk += tl.dot(q, k)
         qk = qk * qk_scale
 
         if SLIDING_WINDOW:
             # dist = tl.arange(start_m, start_m + BLOCK_M)[:, None] \
             #     - tl.arange(start_n * BLOCK_N, (start_n + 1) + BLOCK_N)[None, :] + sliding_window_offset
-            dist = tl.arange(0, BLOCK_M)[:, None] - tl.arange(0, BLOCK_N)[None, :] \
-                 + start_m - start_n * BLOCK_N + sliding_window_offset
+            dist = (
+                tl.arange(0, BLOCK_M)[:, None]
+                - tl.arange(0, BLOCK_N)[None, :]
+                + start_m
+                - start_n * BLOCK_N
+                + sliding_window_offset
+            )
 
             if COMPLEMENT_SLIDING_WINDOW:
-                mask = (dist >= sliding_window_size)
+                mask = dist >= sliding_window_size
             else:
                 mask = (dist >= 0) & (dist < sliding_window_size)
 
         qk = qk - m[:, None]
-        p = tl.math.exp2(qk) # (BLOCK_M, BLOCK_N)
+        p = tl.math.exp2(qk)  # (BLOCK_M, BLOCK_N)
 
         if SLIDING_WINDOW:
             p = tl.where(mask, p, 0)
 
         if not IS_EVEN_N:
-            p = tl.where(
-                ((tl.arange(0, BLOCK_M) + start_m) < N_CTX)[:, None],
-                p, 0
-            )
+            p = tl.where(((tl.arange(0, BLOCK_M) + start_m) < N_CTX)[:, None], p, 0)
 
         o += tl.sum(p, axis=0)
-
 
         Q_block_ptr = tl.advance(Q_block_ptr, offsets=(BLOCK_M, 0))
         m_ptrs = m_ptrs + BLOCK_M
 
     o_offset = off_z.to(tl.int64) * stride_oz + off_h.to(tl.int64) * stride_oh
-    o_range = tl.arange(0, BLOCK_N) + start_n * BLOCK_N # orange
+    o_range = tl.arange(0, BLOCK_N) + start_n * BLOCK_N  # orange
     o_ptrs = Out + o_offset + o_range
-    tl.store(o_ptrs, o.to(Out.type.element_ty), mask = o_range < NKV_CTX)
+    tl.store(o_ptrs, o.to(Out.type.element_ty), mask=o_range < NKV_CTX)
+
 
 def get_score(q, k, m, sliding_window, complement_sliding_window):
     assert q.dim() == 4
@@ -342,19 +429,15 @@ def get_score(q, k, m, sliding_window, complement_sliding_window):
     N_CTX = q.size(-2)
     NKV_CTX = k.size(-2)
     ROUND_CTX = m.size(-1)
-    ret = torch.zeros(
-        (q.size(0), q.size(1), k.size(2)),
-        dtype=k.dtype, device=k.device
-    )
+    ret = torch.zeros((q.size(0), q.size(1), k.size(2)), dtype=k.dtype, device=k.device)
     if sliding_window is not None:
         sliding_window_offset, sliding_window_size = sliding_window
     else:
         sliding_window_offset, sliding_window_size = None, None
 
-    
     grid = lambda META: (
         triton.cdiv(k.shape[2], META["BLOCK_N"]),
-        q.shape[0] * q.shape[1]
+        q.shape[0] * q.shape[1],
     )
     sm_scale = 1 / math.sqrt(q.size(-1))
 
@@ -363,51 +446,94 @@ def get_score(q, k, m, sliding_window, complement_sliding_window):
 
     try:
         _score_kernel[grid](
-            q, k, m, sm_scale, ret,
-            q.stride(0), q.stride(1), q.stride(2), q.stride(3),
-            k.stride(0), k.stride(1), k.stride(2), k.stride(3),
-            ret.stride(0), ret.stride(1), ret.stride(2),
-            q.size(0), q.size(1), k.size(1),
-            N_CTX, ROUND_CTX, NKV_CTX,
+            q,
+            k,
+            m,
+            sm_scale,
+            ret,
+            q.stride(0),
+            q.stride(1),
+            q.stride(2),
+            q.stride(3),
+            k.stride(0),
+            k.stride(1),
+            k.stride(2),
+            k.stride(3),
+            ret.stride(0),
+            ret.stride(1),
+            ret.stride(2),
+            q.size(0),
+            q.size(1),
+            k.size(1),
+            N_CTX,
+            ROUND_CTX,
+            NKV_CTX,
             sliding_window_offset,
             sliding_window_size,
             SLIDING_WINDOW=(sliding_window is not None),
             COMPLEMENT_SLIDING_WINDOW=complement_sliding_window,
             BLOCK_M=_BLOCK_M,
             BLOCK_N=_BLOCK_N,
-            BLOCK_DMODEL=q.size(-1)
+            BLOCK_DMODEL=q.size(-1),
         )
     except triton.OutOfResources as E:
         from warnings import warn
+
         _BLOCK_N = _BLOCK_N // 2
         _BLOCK_M = _BLOCK_M // 2
-        warn(f"Triton Attention Output Resources. {E}\nUse smaller block size {_BLOCK_N}.")
+        warn(
+            f"Triton Attention Output Resources. {E}\nUse smaller block size {_BLOCK_N}."
+        )
         _score_kernel[grid](
-            q, k, m, sm_scale, ret,
-            q.stride(0), q.stride(1), q.stride(2), q.stride(3),
-            k.stride(0), k.stride(1), k.stride(2), k.stride(3),
-            ret.stride(0), ret.stride(1), ret.stride(2),
-            q.size(0), q.size(1), k.size(1),
-            N_CTX, ROUND_CTX, NKV_CTX,
+            q,
+            k,
+            m,
+            sm_scale,
+            ret,
+            q.stride(0),
+            q.stride(1),
+            q.stride(2),
+            q.stride(3),
+            k.stride(0),
+            k.stride(1),
+            k.stride(2),
+            k.stride(3),
+            ret.stride(0),
+            ret.stride(1),
+            ret.stride(2),
+            q.size(0),
+            q.size(1),
+            k.size(1),
+            N_CTX,
+            ROUND_CTX,
+            NKV_CTX,
             sliding_window_offset,
             sliding_window_size,
             SLIDING_WINDOW=(sliding_window is not None),
             COMPLEMENT_SLIDING_WINDOW=complement_sliding_window,
             BLOCK_M=_BLOCK_M,
             BLOCK_N=_BLOCK_N,
-            BLOCK_DMODEL=q.size(-1)
+            BLOCK_DMODEL=q.size(-1),
         )
 
     return ret
 
+
 def _forward(
-    q, k, v, sm_scale, 
-    o = None, m = None, l = None, end = False, 
-    sliding_window=None, init=False,
-    complement_sliding_window=False
+    q,
+    k,
+    v,
+    sm_scale,
+    o=None,
+    m=None,
+    l=None,
+    end=False,
+    sliding_window=None,
+    init=False,
+    complement_sliding_window=False,
 ):
     Lq, Lk, Lv = q.shape[-1], k.shape[-1], v.shape[-1]
-    
+
     assert Lq == Lk and Lk == Lv
     assert Lk in {16, 32, 64, 128}
 
@@ -428,12 +554,32 @@ def _forward(
 
     try:
         _attn_fwd[grid](
-            q, k, v, sm_scale, m, o, l, #
-            q.stride(0), q.stride(1), q.stride(2), q.stride(3),  #
-            k.stride(0), k.stride(1), k.stride(2), k.stride(3),  #
-            v.stride(0), v.stride(1), v.stride(2), v.stride(3),  #
-            o.stride(0), o.stride(1), o.stride(2), o.stride(3),  #
-            q.shape[0], q.shape[1], k.shape[1], #
+            q,
+            k,
+            v,
+            sm_scale,
+            m,
+            o,
+            l,  #
+            q.stride(0),
+            q.stride(1),
+            q.stride(2),
+            q.stride(3),  #
+            k.stride(0),
+            k.stride(1),
+            k.stride(2),
+            k.stride(3),  #
+            v.stride(0),
+            v.stride(1),
+            v.stride(2),
+            v.stride(3),  #
+            o.stride(0),
+            o.stride(1),
+            o.stride(2),
+            o.stride(3),  #
+            q.shape[0],
+            q.shape[1],
+            k.shape[1],  #
             q.shape[2],  #
             q_round_len,
             k.shape[2],
@@ -447,20 +593,43 @@ def _forward(
             SLIDING_WINDOW=(sliding_window is not None),
             COMPLEMENT_SLIDING_WINDOW=complement_sliding_window,
             num_warps=4,
-            num_stages=4
+            num_stages=4,
         )
     except triton.OutOfResources as E:
         _BLOCK_N = _BLOCK_N // 2
         _BLOCK_M = _BLOCK_M // 2
         from warnings import warn
-        warn(f"Triton Attention Output Resources. {E}\nUse smaller block size {_BLOCK_N}.")
+
+        warn(
+            f"Triton Attention Output Resources. {E}\nUse smaller block size {_BLOCK_N}."
+        )
         _attn_fwd[grid](
-            q, k, v, sm_scale, m, o, l, #
-            q.stride(0), q.stride(1), q.stride(2), q.stride(3),  #
-            k.stride(0), k.stride(1), k.stride(2), k.stride(3),  #
-            v.stride(0), v.stride(1), v.stride(2), v.stride(3),  #
-            o.stride(0), o.stride(1), o.stride(2), o.stride(3),  #
-            q.shape[0], q.shape[1], k.shape[1], #
+            q,
+            k,
+            v,
+            sm_scale,
+            m,
+            o,
+            l,  #
+            q.stride(0),
+            q.stride(1),
+            q.stride(2),
+            q.stride(3),  #
+            k.stride(0),
+            k.stride(1),
+            k.stride(2),
+            k.stride(3),  #
+            v.stride(0),
+            v.stride(1),
+            v.stride(2),
+            v.stride(3),  #
+            o.stride(0),
+            o.stride(1),
+            o.stride(2),
+            o.stride(3),  #
+            q.shape[0],
+            q.shape[1],
+            k.shape[1],  #
             q.shape[2],  #
             q_round_len,
             k.shape[2],
@@ -474,15 +643,13 @@ def _forward(
             SLIDING_WINDOW=(sliding_window is not None),
             COMPLEMENT_SLIDING_WINDOW=complement_sliding_window,
             num_warps=4,
-            num_stages=4
+            num_stages=4,
         )
 
-
     if end:
-        o = o[:, :, :q.shape[2], :].contiguous().to(q.dtype)
+        o = o[:, :, : q.shape[2], :].contiguous().to(q.dtype)
 
     return o, m, l
-
 
 
 class TritonMultiStageDotProductionAttention(MultiStageDotProductionAttention):
@@ -508,7 +675,12 @@ class TritonMultiStageDotProductionAttention(MultiStageDotProductionAttention):
 
     def finalize(self):
         self.end = True
-        for q, k, sliding_window, comp in zip(self.q_list, self.k_list, self.sliding_window_list, self.complement_sliding_window_list):
+        for q, k, sliding_window, comp in zip(
+            self.q_list,
+            self.k_list,
+            self.sliding_window_list,
+            self.complement_sliding_window_list,
+        ):
             if q is not None:
                 score = get_score(q, k, self.m, sliding_window, comp)
                 self.score_list.append(score)
@@ -517,24 +689,38 @@ class TritonMultiStageDotProductionAttention(MultiStageDotProductionAttention):
 
         self.ret = self.o
 
-
-    def append(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, end=False, get_score=False, sliding_window = None, complement_sliding_window: bool = False):
+    def append(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        end=False,
+        get_score=False,
+        sliding_window=None,
+        complement_sliding_window: bool = False,
+    ):
         assert q.shape == self.q_shape
 
         if isinstance(sliding_window, int):
-            sliding_window = (
-                k.shape[2] - q.shape[2], sliding_window
-            )
+            sliding_window = (k.shape[2] - q.shape[2], sliding_window)
 
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()
-        
+
         sm_scale = 1 / math.sqrt(q.shape[-1])
         o, m, l = _forward(
-            q, k, v, sm_scale, self.o, self.m, self.l, 
-            sliding_window=sliding_window, end=end, init=not self.init, 
-            complement_sliding_window=complement_sliding_window
+            q,
+            k,
+            v,
+            sm_scale,
+            self.o,
+            self.m,
+            self.l,
+            sliding_window=sliding_window,
+            end=end,
+            init=not self.init,
+            complement_sliding_window=complement_sliding_window,
         )
         self.init = True
         self.o = o
@@ -552,5 +738,5 @@ class TritonMultiStageDotProductionAttention(MultiStageDotProductionAttention):
             self.complement_sliding_window_list.append(None)
 
         if end:
-            assert not self.end 
+            assert not self.end
             self.finalize()

@@ -9,7 +9,7 @@ ATTN_FORWRAD = {
     "inf-llm": inf_llm_forward,
     "infinite-lm": infinite_lm_forward,
     "stream-llm": stream_llm_forward,
-    "origin": origin_forward
+    "origin": origin_forward,
 }
 
 __all__ = ["RotaryEmbeddingESM", "ATTN_FORWARD"]

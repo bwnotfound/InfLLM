@@ -1,13 +1,12 @@
 """
-This code is based on modifications to the FastChat code originally developed by the LMSYS team. 
-The original project is licensed under the Apache License 2.0. 
+This code is based on modifications to the FastChat code originally developed by the LMSYS team.
+The original project is licensed under the Apache License 2.0.
 
 ## Changes Made
 
  - This code incorporates support for the InfLLM patch.
 
 """
-
 
 """Inference for FastChat models."""
 import abc
@@ -23,26 +22,30 @@ import torch
 import argparse
 
 from fastchat.serve.inference import (
-    ChatIO, GptqConfig, AWQConfig, 
-    ExllamaConfig, XftConfig, 
-    load_model, 
+    ChatIO,
+    GptqConfig,
+    AWQConfig,
+    ExllamaConfig,
+    XftConfig,
+    load_model,
     get_context_length,
     get_conv_template,
     get_conversation_template,
     is_partial_stop,
     is_sentence_complete,
-    prepare_logits_processor
+    prepare_logits_processor,
 )
 
 from fastchat.serve.cli import (
-    SimpleChatIO, 
+    SimpleChatIO,
     RichChatIO,
     ProgrammaticChatIO,
     str_to_torch_dtype,
-    add_model_args
+    add_model_args,
 )
 
 from inf_llm.utils import patch_hf
+
 
 @torch.inference_mode()
 def generate_stream(
@@ -87,7 +90,6 @@ def generate_stream(
     output_ids = list(input_ids)
     input_echo_len = len(input_ids)
 
-    
     out = None
     if clear_kv_cache:
         past_key_values = None
@@ -96,7 +98,7 @@ def generate_stream(
             past_key_values = model._fschat_pkv
         else:
             past_key_values = None
-        
+
     def get_length(pkv):
         if pkv is None:
             return 0
@@ -125,7 +127,9 @@ def generate_stream(
     stopped = False
     for i in range(max_new_tokens):
         if i == 0:  # prefill
-            out = model(input_ids=start_ids, use_cache=True, past_key_values=past_key_values)
+            out = model(
+                input_ids=start_ids, use_cache=True, past_key_values=past_key_values
+            )
             logits = out.logits
             past_key_values = out.past_key_values
 
@@ -209,9 +213,9 @@ def generate_stream(
                             output_ids if echo else output_ids[input_echo_len:]
                         )
                     ],
-                    "token_logprobs": token_logprobs
-                    if echo
-                    else token_logprobs[input_echo_len:],
+                    "token_logprobs": (
+                        token_logprobs if echo else token_logprobs[input_echo_len:]
+                    ),
                     "top_logprobs": [{}]
                     * len(token_logprobs if echo else token_logprobs[input_echo_len:]),
                 }
@@ -323,9 +327,9 @@ def chat_loop(
     judge_sent_end: bool = True,
     debug: bool = True,
     history: bool = True,
-    clear_kv_cache = False,
+    clear_kv_cache=False,
     top_k: int = -1,
-    top_p: float = 1.0
+    top_p: float = 1.0,
 ):
     # Model
     model, tokenizer = load_model(
@@ -344,7 +348,7 @@ def chat_loop(
         debug=debug,
     )
     if inf_llm_config is not None:
-        model = patch_hf(model, inf_llm_config.type,  **inf_llm_config)
+        model = patch_hf(model, inf_llm_config.type, **inf_llm_config)
     generate_stream_func = generate_stream
 
     model_type = str(type(model)).lower()
@@ -500,7 +504,7 @@ def chat_loop(
             "stop_token_ids": conv.stop_token_ids,
             "echo": False,
             "top_k": top_k,
-            "top_p": top_p
+            "top_p": top_p,
         }
 
         try:
@@ -512,7 +516,7 @@ def chat_loop(
                 device,
                 context_len=context_len,
                 judge_sent_end=judge_sent_end,
-                clear_kv_cache=_clear_kv_cache
+                clear_kv_cache=_clear_kv_cache,
             )
             t = time.time()
             outputs = chatio.stream_output(output_stream)
@@ -541,7 +545,7 @@ def chat_loop(
 
                 reload_conv(conv)
 
-                
+
 def main(args):
     if args.gpus:
         if len(args.gpus.split(",")) < args.num_gpus:
@@ -561,6 +565,7 @@ def main(args):
 
     if args.inf_llm_config_path is not None:
         from omegaconf import OmegaConf
+
         inf_llm_config = OmegaConf.load(args.inf_llm_config_path)
         if inf_llm_config.conv_type == "llama-3-inst":
             args.conv_template = "llama-3-inst"
@@ -620,13 +625,15 @@ def main(args):
             debug=args.debug,
             history=not args.no_history,
             inf_llm_config=inf_llm_config,
-            clear_kv_cache=args.clear_kv_cache
+            clear_kv_cache=args.clear_kv_cache,
         )
     except KeyboardInterrupt:
         print("exit...")
 
+
 from fastchat.conversation import Conversation, register_conv_template, SeparatorStyle
 import dataclasses
+
 
 @dataclasses.dataclass
 class Llama3Conv(Conversation):
@@ -642,7 +649,7 @@ class Llama3Conv(Conversation):
             else:
                 ret += self.role_format.format(role=role)
         return ret
-    
+
     def copy(self):
         return Llama3Conv(
             name=self.name,
@@ -656,8 +663,9 @@ class Llama3Conv(Conversation):
             sep2=self.sep2,
             stop_str=self.stop_str,
             stop_token_ids=self.stop_token_ids,
-            role_format=self.role_format
+            role_format=self.role_format,
         )
+
 
 register_conv_template(
     Llama3Conv(
@@ -667,7 +675,7 @@ register_conv_template(
         sep_style=SeparatorStyle.NO_COLON_SINGLE,
         sep="<|eot_id|>",
         role_format="<|start_header_id|>{role}<|end_header_id|>\n\n",
-        stop_token_ids=[128009, 128001]
+        stop_token_ids=[128009, 128001],
     )
 )
 
@@ -714,13 +722,8 @@ if __name__ == "__main__":
         help="Print useful debug information (e.g., prompts)",
     )
     parser.add_argument(
-        "--inf-llm-config-path",
-        type=str, help="Inf LLM patch config",
-        default=None
+        "--inf-llm-config-path", type=str, help="Inf LLM patch config", default=None
     )
-    parser.add_argument(
-        "--clear-kv-cache",
-        action="store_true"
-    )
+    parser.add_argument("--clear-kv-cache", action="store_true")
     args = parser.parse_args()
     main(args)
