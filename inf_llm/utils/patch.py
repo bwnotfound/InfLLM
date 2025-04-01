@@ -183,16 +183,27 @@ def patch_hf(
     else:
         raise ValueError("Only supports llama, mistral and qwen2 models.")
 
-    hf_rope = model.model.layers[0].self_attn.rotary_emb
-    base = base if base is not None else hf_rope.base
-    distance_scale = distance_scale if distance_scale is not None else 1.0
-    rope = RotaryEmbeddingESM(hf_rope.dim, base, distance_scale)
+    is_qwen = isinstance(model, Qwen2ForCausalLM)
+
+    if is_qwen:
+        dim = model.model.layers[0].self_attn.head_dim
+        base = base if base is not None else model.config.rope_theta
+        distance_scale = distance_scale if distance_scale is not None else 1.0
+        rope = RotaryEmbeddingESM(dim, base, distance_scale)
+    else:
+        hf_rope = model.model.layers[0].self_attn.rotary_emb
+        base = base if base is not None else hf_rope.base
+        distance_scale = distance_scale if distance_scale is not None else 1.0
+        rope = RotaryEmbeddingESM(hf_rope.dim, base, distance_scale)
     model.model.position_bias = rope
 
     def set_forward(m):
         if isinstance(m, Attention):
             m._old_forward = m.forward
             m.forward = forward.__get__(m, Attention)
+            if is_qwen:
+                m.num_heads = model.config.num_attention_heads
+                m.num_key_value_heads = model.config.num_key_value_heads
 
     model.apply(set_forward)
 
