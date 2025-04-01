@@ -186,9 +186,6 @@ def patch_hf(
                 use_cache=use_cache,
             )
 
-            assert len(layer_outputs) == 2
-            layer_outputs = (layer_outputs[0], *layer_outputs[1])
-
             hidden_states = layer_outputs[0]
 
             if use_cache:
