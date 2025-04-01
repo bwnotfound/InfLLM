@@ -35,7 +35,7 @@ def huggingface_forward(forward):
             o = ret
             pkv = None
 
-        return o, None, pkv
+        return o, (None, pkv)
 
     return hf_forward
 
@@ -137,6 +137,9 @@ def patch_hf(
                 output_attentions=output_attentions,
                 use_cache=use_cache,
             )
+
+            assert len(layer_outputs) == 2
+            layer_outputs = (layer_outputs[0], *layer_outputs[1])
 
             hidden_states = layer_outputs[0]
 

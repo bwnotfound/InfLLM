@@ -1,3 +1,7 @@
+# Notice
+
+This fork is try to fit the latest version of transformers, especially for qwen2, and try to utilize more cutomized function for generation control.
+
 # InfLLM: Unveiling the Intrinsic Capacity of LLMs for Understanding Extremely Long Sequences with Training-Free Memory
 
 The code of our paper "InfLLM: Unveiling the Intrinsic Capacity of LLMs for Understanding Extremely Long Sequences with Training-Free Memory" [[pdf]](https://arxiv.org/pdf/2402.04617.pdf).
