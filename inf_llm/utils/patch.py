@@ -35,9 +35,53 @@ def huggingface_forward(forward):
             o = ret
             pkv = None
 
-        return o, (None, pkv)
+        return o, None, pkv
 
     return hf_forward
+
+
+def qwen_decoder_layer_forward(
+    self,
+    hidden_states,
+    attention_mask,
+    position_ids,
+    past_key_value,
+    output_attentions,
+    use_cache,
+    cache_position,
+    position_embeddings,
+    **kwargs,
+):
+    residual = hidden_states
+
+    hidden_states = self.input_layernorm(hidden_states)
+
+    # Self Attention
+    hidden_states, self_attn_weights, pkv = self.self_attn(
+        hidden_states=hidden_states,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        past_key_value=past_key_value,
+        output_attentions=output_attentions,
+        use_cache=use_cache,
+        cache_position=cache_position,
+        position_embeddings=position_embeddings,
+        **kwargs,
+    )
+    hidden_states = residual + hidden_states
+
+    # Fully Connected
+    residual = hidden_states
+    hidden_states = self.post_attention_layernorm(hidden_states)
+    hidden_states = self.mlp(hidden_states)
+    hidden_states = residual + hidden_states
+
+    outputs = (hidden_states,)
+    if output_attentions:
+        outputs += (self_attn_weights,)
+    outputs += (pkv,)
+
+    return outputs
 
 
 def patch_hf(
@@ -60,7 +104,11 @@ def patch_hf(
         MistralAttention,
         MistralModel,
     )
-    from transformers.models.qwen2.modeling_qwen2 import Qwen2Attention, Qwen2Model
+    from transformers.models.qwen2.modeling_qwen2 import (
+        Qwen2Attention,
+        Qwen2Model,
+        Qwen2DecoderLayer,
+    )
 
     def model_forward(
         self,
@@ -207,6 +255,10 @@ def patch_hf(
             if is_qwen:
                 m.num_heads = model.config.num_attention_heads
                 m.num_key_value_heads = model.config.num_key_value_heads
+        if is_qwen:
+            if isinstance(m, Qwen2DecoderLayer):
+                m._old_forward = m.forward
+                m.forward = qwen_decoder_layer_forward.__get__(m, Qwen2DecoderLayer)
 
     model.apply(set_forward)
 
