@@ -43,13 +43,13 @@ def huggingface_forward(forward):
 def qwen_decoder_layer_forward(
     self,
     hidden_states,
-    attention_mask,
-    position_ids,
-    past_key_value,
-    output_attentions,
-    use_cache,
-    cache_position,
-    position_embeddings,
+    attention_mask=None,
+    position_ids=None,
+    past_key_value=None,
+    output_attentions=False,
+    use_cache=False,
+    cache_position=None,
+    position_embeddings=None,
     **kwargs,
 ):
     residual = hidden_states
